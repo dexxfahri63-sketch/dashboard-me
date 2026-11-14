@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /dexx_wallets/{walletId} {
+      allow read, write: if true;
+    }
+    match /dexx_transactions/{txId} {
+      allow read, write: if true;
+    }
+    match /dexx_budgets/{budgetId} {
+      allow read, write: if true;
+    }
+    match /dexx_wishlist/{wishlistId} {
+      allow read, write: if true;
+    }
+    match /dexx_settings/{settingId} {
+      allow read, write: if true;
+    }
+  }
+}

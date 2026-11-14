@@ -1,0 +1,6 @@
+{
+  "name": "DEXX FINANCE",
+  "description": "Dashboard manajemen keuangan pribadi modern dengan multi-dompet, filter periode dinamis, kontrol anggaran kategori, pelacak wishlist & trading, serta integrasi backend Google Apps Script & Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
