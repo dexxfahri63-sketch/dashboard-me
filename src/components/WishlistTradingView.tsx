@@ -1,5 +1,12 @@
 import { useRef, useState } from 'react';
-import { ImagePlus, Loader2, Plus, Trash2, TrendingUp } from 'lucide-react';
+import {
+  ImagePlus,
+  Loader2,
+  Minus,
+  Plus,
+  Trash2,
+  TrendingUp,
+} from 'lucide-react';
 import type {
   NumberDisplayMode,
   Transaction,
@@ -7,7 +14,12 @@ import type {
   WishlistItem,
 } from '../types/finance';
 import { uploadWishlistImage } from '../services/firebaseService';
-import { formatDateID, formatIDR, formatSmartIDR } from '../utils/financeEngine';
+import {
+  formatDateID,
+  formatIDR,
+  formatSmartIDR,
+  type WishlistFundAction,
+} from '../utils/financeEngine';
 import { resolveWishlistImage } from '../utils/wishlistImages';
 
 interface WishlistTradingViewProps {
@@ -16,6 +28,13 @@ interface WishlistTradingViewProps {
   transactions: Transaction[];
   numberMode: NumberDisplayMode;
   onSaveWishlist: (item: WishlistItem) => void;
+  onAdjustWishlistFund: (
+    item: WishlistItem,
+    amount: number,
+    action: WishlistFundAction,
+    walletId: string,
+    syncWithWallet: boolean
+  ) => void;
   onDeleteWishlist: (id: string) => void;
   compact?: boolean;
 }
@@ -26,6 +45,7 @@ export function WishlistTradingView({
   transactions,
   numberMode,
   onSaveWishlist,
+  onAdjustWishlistFund,
   onDeleteWishlist,
   compact = false,
 }: WishlistTradingViewProps) {
@@ -42,6 +62,8 @@ export function WishlistTradingView({
 
   const [addingFundId, setAddingFundId] = useState<string | null>(null);
   const [fundIncrement, setFundIncrement] = useState('');
+  const [fundWalletId, setFundWalletId] = useState('');
+  const [syncFundWithWallet, setSyncFundWithWallet] = useState(true);
   const newFormFileRef = useRef<HTMLInputElement | null>(null);
 
   const tradingWallets = wallets.filter((w) => w.type === 'trading');
@@ -114,13 +136,17 @@ export function WishlistTradingView({
     setShowAddForm(false);
   };
 
-  const handleAddFund = (item: WishlistItem) => {
+  const handleFundAdjust = (item: WishlistItem, action: WishlistFundAction) => {
     const delta = Number(fundIncrement);
     if (Number.isNaN(delta) || delta <= 0) return;
-    onSaveWishlist({
-      ...item,
-      currentAmount: Math.min(item.targetAmount, item.currentAmount + delta),
-    });
+    const targetWalletId = fundWalletId || item.walletId || wallets[0]?.id || '';
+    onAdjustWishlistFund(
+      item,
+      delta,
+      action,
+      targetWalletId,
+      syncFundWithWallet
+    );
     setAddingFundId(null);
     setFundIncrement('');
   };
@@ -364,43 +390,18 @@ export function WishlistTradingView({
                         <span className="font-mono text-sm font-bold text-emerald-400 tabular-nums">
                           {pct}%
                         </span>
-                        {addingFundId === item.id ? (
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              min={1}
-                              placeholder="500000"
-                              aria-label={`Nominal tambahan tabungan untuk ${item.title}`}
-                              value={fundIncrement}
-                              onChange={(e) => setFundIncrement(e.target.value)}
-                              className="w-28 rounded border border-emerald-500 bg-[#090D16] px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none"
-                              autoFocus
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleAddFund(item)}
-                              className="rounded bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
-                            >
-                              Tambah
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setAddingFundId(null)}
-                              className="px-1.5 py-1 text-xs text-slate-400 hover:text-slate-200"
-                            >
-                              Batal
-                            </button>
-                          </div>
-                        ) : (
+                        {addingFundId !== item.id && (
                           <button
                             type="button"
                             onClick={() => {
                               setAddingFundId(item.id);
                               setFundIncrement('1000000');
+                              setFundWalletId(item.walletId || wallets[0]?.id || '');
+                              setSyncFundWithWallet(true);
                             }}
                             className="rounded-md border border-slate-700 bg-[#090D16] px-2.5 py-1 text-xs font-medium text-slate-200 hover:border-emerald-500/50 hover:text-emerald-300 transition-colors whitespace-nowrap"
                           >
-                            + Setor Tabungan
+                            Setor / Tarik
                           </button>
                         )}
                         {!compact && (
@@ -415,6 +416,82 @@ export function WishlistTradingView({
                         )}
                       </div>
                     </div>
+
+                    {addingFundId === item.id && (
+                      <div
+                        data-testid={`wishlist-fund-panel-${item.id}`}
+                        className="rounded-lg border border-slate-700/80 bg-[#090D16] p-3 space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            type="number"
+                            min={1}
+                            placeholder="500000"
+                            aria-label={`Nominal tabungan untuk ${item.title}`}
+                            value={fundIncrement}
+                            onChange={(e) => setFundIncrement(e.target.value)}
+                            className="w-36 rounded-md border border-slate-700 bg-[#0F1623] px-2.5 py-1.5 text-xs font-mono text-slate-100 focus:border-emerald-500 focus:outline-none"
+                            autoFocus
+                          />
+                          <select
+                            aria-label={`Dompet sinkronisasi untuk ${item.title}`}
+                            value={fundWalletId || item.walletId || wallets[0]?.id || ''}
+                            onChange={(e) => setFundWalletId(e.target.value)}
+                            className="rounded-md border border-slate-700 bg-[#0F1623] px-2.5 py-1.5 text-xs text-slate-200 focus:border-emerald-500 focus:outline-none"
+                          >
+                            {wallets.map((w) => (
+                              <option key={w.id} value={w.id}>
+                                {w.name} ({formatSmartIDR(w.currentBalance, numberMode, 50_000_000)})
+                              </option>
+                            ))}
+                          </select>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={
+                                Number(fundIncrement) <= 0 ||
+                                item.currentAmount >= item.targetAmount
+                              }
+                              onClick={() => handleFundAdjust(item, 'deposit')}
+                              className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-40 whitespace-nowrap"
+                            >
+                              <Plus className="h-3 w-3" aria-hidden="true" />
+                              <span>Tambah</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={
+                                Number(fundIncrement) <= 0 || item.currentAmount <= 0
+                              }
+                              onClick={() => handleFundAdjust(item, 'withdraw')}
+                              className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/15 px-2.5 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/25 disabled:opacity-40 whitespace-nowrap"
+                            >
+                              <Minus className="h-3 w-3" aria-hidden="true" />
+                              <span>Kurangi</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setAddingFundId(null)}
+                              className="px-2 py-1.5 text-xs text-slate-400 hover:text-slate-200"
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        </div>
+
+                        <label className="flex items-center gap-2 text-[11px] text-slate-400 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={syncFundWithWallet}
+                            onChange={(e) => setSyncFundWithWallet(e.target.checked)}
+                            className="h-3.5 w-3.5 rounded border-slate-600 bg-[#0F1623] accent-emerald-500"
+                          />
+                          <span>
+                            Sinkronkan ke saldo dompet &amp; catat di Riwayat Transaksi (termasuk edit/hapus dua arah)
+                          </span>
+                        </label>
+                      </div>
+                    )}
 
                     <div
                       className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800"

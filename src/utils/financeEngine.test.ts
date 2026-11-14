@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyWishlistFundMutation,
   buildCashflowSeries,
   buildExpenseDonutData,
   calculateBudgetStatuses,
@@ -9,6 +10,7 @@ import {
   filterTransactionsByDateRange,
   formatSmartIDR,
   getDateRangeBounds,
+  syncWishlistOnTransactionChange,
 } from './financeEngine';
 import type { BudgetLimit, Transaction, Wallet, WishlistItem } from '../types/finance';
 
@@ -172,4 +174,68 @@ test('formatSmartIDR scales large amounts cleanly in smart mode and preserves fu
   assert.equal(formatSmartIDR(1250000000, 'smart'), 'Rp 1,25 M');
   assert.equal(formatSmartIDR(185000, 'smart'), 'Rp 185.000');
   assert.equal(formatSmartIDR(146740000, 'full'), 'Rp 146.740.000');
+});
+
+test('applyWishlistFundMutation supports adding & subtracting funds with synced wallet transactions', () => {
+  const motor: WishlistItem = {
+    id: 'wish-motor',
+    title: 'Motor',
+    category: 'Otomotif',
+    targetAmount: 20000000,
+    currentAmount: 1100000,
+    targetDate: '2027-03-30',
+    walletId: 'w1',
+  };
+
+  // 1. Tambah 1.000.000 with wallet sync -> wishlist 2.100.000 & expense tx 1.000.000
+  const depositRes = applyWishlistFundMutation({
+    item: motor,
+    rawAmount: 1000000,
+    action: 'deposit',
+    walletId: 'w1',
+    syncWithWallet: true,
+    dateISO: '2026-11-13',
+  });
+  assert.equal(depositRes.updatedItem.currentAmount, 2100000);
+  assert.equal(depositRes.appliedDelta, 1000000);
+  assert.equal(depositRes.syncedTransaction?.type, 'expense');
+  assert.equal(depositRes.syncedTransaction?.category, 'Tabungan Wishlist');
+  assert.equal(depositRes.syncedTransaction?.amount, 1000000);
+  assert.equal(depositRes.syncedTransaction?.wishlistId, 'wish-motor');
+
+  // 2. Kurangi 500.000 with wallet sync -> wishlist 1.600.000 & income tx 500.000
+  const withdrawRes = applyWishlistFundMutation({
+    item: depositRes.updatedItem,
+    rawAmount: 500000,
+    action: 'withdraw',
+    walletId: 'w1',
+    syncWithWallet: true,
+    dateISO: '2026-11-13',
+  });
+  assert.equal(withdrawRes.updatedItem.currentAmount, 1600000);
+  assert.equal(withdrawRes.appliedDelta, 500000);
+  assert.equal(withdrawRes.syncedTransaction?.type, 'income');
+  assert.equal(withdrawRes.syncedTransaction?.category, 'Penarikan Wishlist');
+  assert.equal(withdrawRes.syncedTransaction?.amount, 500000);
+
+  // 3. Kurangi beyond available balance clamps to 0 and returns only actual amount
+  const overWithdraw = applyWishlistFundMutation({
+    item: withdrawRes.updatedItem,
+    rawAmount: 5000000,
+    action: 'withdraw',
+    walletId: 'w1',
+    syncWithWallet: true,
+  });
+  assert.equal(overWithdraw.updatedItem.currentAmount, 0);
+  assert.equal(overWithdraw.appliedDelta, 1600000);
+  assert.equal(overWithdraw.syncedTransaction?.amount, 1600000);
+
+  // 4. Two-way sync when linked transaction is edited or deleted
+  const tx1 = depositRes.syncedTransaction!;
+  const txEdited: Transaction = { ...tx1, amount: 1500000 };
+  const editSync = syncWishlistOnTransactionChange([depositRes.updatedItem], tx1, txEdited);
+  assert.equal(editSync.nextWishlist[0].currentAmount, 2600000);
+
+  const deleteSync = syncWishlistOnTransactionChange(editSync.nextWishlist, txEdited, null);
+  assert.equal(deleteSync.nextWishlist[0].currentAmount, 1100000);
 });

@@ -4,6 +4,7 @@ import type {
   Transaction,
   TransactionType,
   WalletWithBalance,
+  WishlistItem,
 } from '../types/finance';
 import {
   EXPENSE_CATEGORIES,
@@ -17,6 +18,7 @@ interface TransactionModalProps {
   isOpen: boolean;
   editingTransaction: Transaction | null;
   wallets: WalletWithBalance[];
+  wishlist?: WishlistItem[];
   onClose: () => void;
   onSave: (tx: Transaction) => void;
 }
@@ -25,6 +27,7 @@ export function TransactionModal({
   isOpen,
   editingTransaction,
   wallets,
+  wishlist = [],
   onClose,
   onSave,
 }: TransactionModalProps) {
@@ -34,6 +37,7 @@ export function TransactionModal({
   const [amount, setAmount] = useState('');
   const [walletId, setWalletId] = useState(wallets[0]?.id || '');
   const [toWalletId, setToWalletId] = useState(wallets[1]?.id || wallets[0]?.id || '');
+  const [linkedWishlistId, setLinkedWishlistId] = useState('');
   const [description, setDescription] = useState('');
   const [error, setError] = useState('');
 
@@ -51,6 +55,7 @@ export function TransactionModal({
           wallets.find((w) => w.id !== editingTransaction.walletId)?.id ||
           ''
       );
+      setLinkedWishlistId(editingTransaction.wishlistId || '');
       setDescription(editingTransaction.description);
     } else {
       setType('expense');
@@ -61,6 +66,7 @@ export function TransactionModal({
       const secondId = wallets.find((w) => w.id !== firstId)?.id || firstId;
       setWalletId(firstId);
       setToWalletId(secondId);
+      setLinkedWishlistId('');
       setDescription('');
     }
   }, [isOpen, editingTransaction, wallets]);
@@ -109,6 +115,13 @@ export function TransactionModal({
       }
     }
 
+    const isWishlistLinked =
+      type !== 'transfer' &&
+      (category === 'Tabungan Wishlist' ||
+        category === 'Penarikan Wishlist' ||
+        Boolean(linkedWishlistId)) &&
+      Boolean(linkedWishlistId);
+
     onSave({
       id: editingTransaction?.id || `tx-${Date.now()}`,
       date,
@@ -118,6 +131,12 @@ export function TransactionModal({
       amount: numericAmount,
       walletId,
       toWalletId: type === 'transfer' ? toWalletId : undefined,
+      wishlistId: isWishlistLinked ? linkedWishlistId : undefined,
+      wishlistAction: isWishlistLinked
+        ? type === 'expense'
+          ? 'deposit'
+          : 'withdraw'
+        : undefined,
       createdAt: editingTransaction?.createdAt || new Date().toISOString(),
     });
     onClose();
@@ -277,6 +296,29 @@ export function TransactionModal({
               </select>
             </label>
           )}
+
+          {(category === 'Tabungan Wishlist' ||
+            category === 'Penarikan Wishlist' ||
+            linkedWishlistId) &&
+            type !== 'transfer' &&
+            wishlist.length > 0 && (
+              <label className="block text-xs font-medium text-slate-300">
+                Sinkronkan ke Target Wishlist
+                <select
+                  value={linkedWishlistId}
+                  onChange={(e) => setLinkedWishlistId(e.target.value)}
+                  className="mt-1.5 w-full rounded-lg border border-slate-700 bg-[#090D16] px-3 py-2 text-xs text-slate-100 focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="">Tidak dihubungkan ke target wishlist</option>
+                  {wishlist.map((wl) => (
+                    <option key={wl.id} value={wl.id}>
+                      {wl.title} ({formatIDR(wl.currentAmount, true)} /{' '}
+                      {formatIDR(wl.targetAmount, true)})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
 
           <label className="block text-xs font-medium text-slate-300">
             Keterangan

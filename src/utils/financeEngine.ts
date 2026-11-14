@@ -18,6 +18,7 @@ export const EXPENSE_CATEGORIES = [
   'Belanja',
   'Kesehatan',
   'Trading',
+  'Tabungan Wishlist',
   'Lainnya',
 ] as const;
 
@@ -26,6 +27,7 @@ export const INCOME_CATEGORIES = [
   'Freelance & Bisnis',
   'Profit Trading',
   'Dividen & Bunga',
+  'Penarikan Wishlist',
   'Lainnya',
 ] as const;
 
@@ -437,4 +439,137 @@ export function buildExpenseDonutData(
       amount,
       percentage: grandTotal > 0 ? Math.round((amount / grandTotal) * 100) : 0,
     }));
+}
+
+export type WishlistFundAction = 'deposit' | 'withdraw';
+
+export interface WishlistFundMutationResult {
+  updatedItem: WishlistItem;
+  appliedDelta: number;
+  syncedTransaction: Transaction | null;
+}
+
+export function applyWishlistFundMutation(params: {
+  item: WishlistItem;
+  rawAmount: number;
+  action: WishlistFundAction;
+  walletId: string;
+  syncWithWallet: boolean;
+  dateISO?: string;
+  nowISO?: string;
+}): WishlistFundMutationResult {
+  const { item, rawAmount, action, walletId, syncWithWallet } = params;
+  const amount = Math.max(0, Number(rawAmount) || 0);
+  const dateISO = params.dateISO || toISODate(new Date());
+  const nowISO = params.nowISO || new Date().toISOString();
+
+  if (amount <= 0) {
+    return {
+      updatedItem: item,
+      appliedDelta: 0,
+      syncedTransaction: null,
+    };
+  }
+
+  let nextAmount = item.currentAmount;
+  let appliedDelta = 0;
+
+  if (action === 'deposit') {
+    const ceiling = Math.max(item.targetAmount, item.currentAmount);
+    nextAmount = Math.min(ceiling, item.currentAmount + amount);
+    appliedDelta = nextAmount - item.currentAmount;
+  } else {
+    nextAmount = Math.max(0, item.currentAmount - amount);
+    appliedDelta = item.currentAmount - nextAmount;
+  }
+
+  const updatedItem: WishlistItem = {
+    ...item,
+    currentAmount: nextAmount,
+  };
+
+  if (!syncWithWallet || appliedDelta <= 0 || !walletId) {
+    return {
+      updatedItem,
+      appliedDelta,
+      syncedTransaction: null,
+    };
+  }
+
+  const isDeposit = action === 'deposit';
+  const syncedTransaction: Transaction = {
+    id: `tx-wish-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    date: dateISO,
+    type: isDeposit ? 'expense' : 'income',
+    category: isDeposit ? 'Tabungan Wishlist' : 'Penarikan Wishlist',
+    description: isDeposit
+      ? `Setor tabungan wishlist: ${item.title}`
+      : `Tarik tabungan wishlist: ${item.title}`,
+    amount: appliedDelta,
+    walletId,
+    wishlistId: item.id,
+    wishlistAction: action,
+    createdAt: nowISO,
+  };
+
+  return {
+    updatedItem,
+    appliedDelta,
+    syncedTransaction,
+  };
+}
+
+function getTransactionWishlistSign(tx: Transaction): 1 | -1 | 0 {
+  if (!tx.wishlistId) return 0;
+  if (tx.wishlistAction === 'deposit') return 1;
+  if (tx.wishlistAction === 'withdraw') return -1;
+  if (tx.type === 'expense') return 1;
+  if (tx.type === 'income') return -1;
+  return 0;
+}
+
+export function syncWishlistOnTransactionChange(
+  wishlist: WishlistItem[],
+  prevTx: Transaction | null,
+  nextTx: Transaction | null
+): { nextWishlist: WishlistItem[]; changedItems: WishlistItem[] } {
+  const deltaByWishlistId = new Map<string, number>();
+
+  if (prevTx && prevTx.wishlistId) {
+    const prevSign = getTransactionWishlistSign(prevTx);
+    if (prevSign !== 0) {
+      deltaByWishlistId.set(
+        prevTx.wishlistId,
+        (deltaByWishlistId.get(prevTx.wishlistId) || 0) - prevSign * prevTx.amount
+      );
+    }
+  }
+
+  if (nextTx && nextTx.wishlistId) {
+    const nextSign = getTransactionWishlistSign(nextTx);
+    if (nextSign !== 0) {
+      deltaByWishlistId.set(
+        nextTx.wishlistId,
+        (deltaByWishlistId.get(nextTx.wishlistId) || 0) + nextSign * nextTx.amount
+      );
+    }
+  }
+
+  if (deltaByWishlistId.size === 0) {
+    return { nextWishlist: wishlist, changedItems: [] };
+  }
+
+  const changedItems: WishlistItem[] = [];
+  const nextWishlist = wishlist.map((item) => {
+    const delta = deltaByWishlistId.get(item.id);
+    if (!delta) return item;
+    const ceiling = Math.max(item.targetAmount, item.currentAmount);
+    const updatedAmount = Math.max(0, Math.min(ceiling, item.currentAmount + delta));
+    if (updatedAmount === item.currentAmount) return item;
+    const updated = { ...item, currentAmount: updatedAmount };
+    changedItems.push(updated);
+    return updated;
+  });
+
+  return { nextWishlist, changedItems };
 }

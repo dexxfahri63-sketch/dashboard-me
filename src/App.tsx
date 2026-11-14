@@ -52,14 +52,18 @@ import type {
   WishlistItem,
 } from './types/finance';
 import {
+  applyWishlistFundMutation,
   buildCashflowSeries,
   buildExpenseDonutData,
   calculateBudgetStatuses,
   calculateKpiSummary,
   calculateWalletBalances,
   filterTransactionsByDateRange,
+  formatIDR,
   getDateRangeBounds,
+  syncWishlistOnTransactionChange,
   toISODate,
+  type WishlistFundAction,
 } from './utils/financeEngine';
 import { fetchAllFromGas, postGasAction } from './utils/gasApi';
 
@@ -359,26 +363,83 @@ export default function App() {
 
   // CRUD handlers (Optimistic UI + Async Firestore)
   const handleSaveTransaction = (tx: Transaction) => {
+    const prevTx = state.transactions.find((item) => item.id === tx.id) || null;
+    const { changedItems } = syncWishlistOnTransactionChange(
+      state.wishlist,
+      prevTx,
+      tx
+    );
+
     setState((prev) => {
       const exists = prev.transactions.some((item) => item.id === tx.id);
       const nextTransactions = exists
         ? prev.transactions.map((item) => (item.id === tx.id ? tx : item))
         : [tx, ...prev.transactions];
-      return { ...prev, transactions: nextTransactions };
+      const { nextWishlist } = syncWishlistOnTransactionChange(
+        prev.wishlist,
+        prevTx,
+        tx
+      );
+      return {
+        ...prev,
+        transactions: nextTransactions,
+        wishlist: nextWishlist,
+      };
     });
-    runFirestoreSafe(() => saveTransactionDoc(tx));
+
+    runFirestoreSafe(async () => {
+      await saveTransactionDoc(tx);
+      for (const wl of changedItems) {
+        await saveWishlistDoc(wl);
+      }
+    });
     syncMutationToGas('upsertTransaction', tx);
-    showNotice('Transaksi berhasil disimpan.');
+    for (const wl of changedItems) {
+      syncMutationToGas('upsertWishlist', wl);
+    }
+    showNotice(
+      changedItems.length > 0
+        ? 'Transaksi disimpan & target wishlist disinkronkan.'
+        : 'Transaksi berhasil disimpan.'
+    );
   };
 
   const handleDeleteTransaction = (txId: string) => {
-    setState((prev) => ({
-      ...prev,
-      transactions: prev.transactions.filter((t) => t.id !== txId),
-    }));
-    runFirestoreSafe(() => deleteTransactionDoc(txId));
+    const prevTx = state.transactions.find((t) => t.id === txId) || null;
+    const { changedItems } = syncWishlistOnTransactionChange(
+      state.wishlist,
+      prevTx,
+      null
+    );
+
+    setState((prev) => {
+      const { nextWishlist } = syncWishlistOnTransactionChange(
+        prev.wishlist,
+        prevTx,
+        null
+      );
+      return {
+        ...prev,
+        transactions: prev.transactions.filter((t) => t.id !== txId),
+        wishlist: nextWishlist,
+      };
+    });
+
+    runFirestoreSafe(async () => {
+      await deleteTransactionDoc(txId);
+      for (const wl of changedItems) {
+        await saveWishlistDoc(wl);
+      }
+    });
     syncMutationToGas('deleteTransaction', { id: txId });
-    showNotice('Transaksi dihapus.');
+    for (const wl of changedItems) {
+      syncMutationToGas('upsertWishlist', wl);
+    }
+    showNotice(
+      changedItems.length > 0
+        ? 'Transaksi dihapus & saldo wishlist disinkronkan kembali.'
+        : 'Transaksi dihapus.'
+    );
   };
 
   const handleSaveWallet = (wallet: Wallet) => {
@@ -428,6 +489,69 @@ export default function App() {
     runFirestoreSafe(() => saveWishlistDoc(item));
     syncMutationToGas('upsertWishlist', item);
     showNotice(`Target "${item.title}" diperbarui.`);
+  };
+
+  const handleAdjustWishlistFund = (
+    item: WishlistItem,
+    amount: number,
+    action: WishlistFundAction,
+    walletId: string,
+    syncWithWallet: boolean
+  ) => {
+    const { updatedItem, appliedDelta, syncedTransaction } =
+      applyWishlistFundMutation({
+        item,
+        rawAmount: amount,
+        action,
+        walletId,
+        syncWithWallet,
+      });
+
+    if (appliedDelta <= 0) {
+      showNotice(
+        action === 'deposit'
+          ? `Target "${item.title}" sudah mencapai batas dana.`
+          : `Saldo terkumpul "${item.title}" sudah Rp 0.`,
+        'err'
+      );
+      return;
+    }
+
+    setState((prev) => ({
+      ...prev,
+      wishlist: prev.wishlist.map((w) => (w.id === item.id ? updatedItem : w)),
+      transactions: syncedTransaction
+        ? [syncedTransaction, ...prev.transactions]
+        : prev.transactions,
+    }));
+
+    runFirestoreSafe(async () => {
+      await saveWishlistDoc(updatedItem);
+      if (syncedTransaction) {
+        await saveTransactionDoc(syncedTransaction);
+      }
+    });
+
+    syncMutationToGas('upsertWishlist', updatedItem);
+    if (syncedTransaction) {
+      syncMutationToGas('upsertTransaction', syncedTransaction);
+    }
+
+    const walletName =
+      state.wallets.find((w) => w.id === walletId)?.name || 'Dompet';
+    if (action === 'deposit') {
+      showNotice(
+        syncedTransaction
+          ? `Tabungan "${item.title}" ditambah ${formatIDR(appliedDelta)} & disinkronkan dari ${walletName}.`
+          : `Tabungan "${item.title}" ditambah ${formatIDR(appliedDelta)}.`
+      );
+    } else {
+      showNotice(
+        syncedTransaction
+          ? `Tabungan "${item.title}" dikurangi ${formatIDR(appliedDelta)} & dikembalikan ke ${walletName}.`
+          : `Tabungan "${item.title}" dikurangi ${formatIDR(appliedDelta)}.`
+      );
+    }
   };
 
   const handleDeleteWishlist = (id: string) => {
@@ -816,6 +940,7 @@ export default function App() {
                 transactions={filteredTransactions}
                 numberMode={state.settings.numberMode}
                 onSaveWishlist={handleSaveWishlist}
+                onAdjustWishlistFund={handleAdjustWishlistFund}
                 onDeleteWishlist={handleDeleteWishlist}
                 compact
               />
@@ -874,6 +999,7 @@ export default function App() {
               transactions={state.transactions}
               numberMode={state.settings.numberMode}
               onSaveWishlist={handleSaveWishlist}
+              onAdjustWishlistFund={handleAdjustWishlistFund}
               onDeleteWishlist={handleDeleteWishlist}
             />
           )}
@@ -884,6 +1010,7 @@ export default function App() {
         isOpen={txModalOpen}
         editingTransaction={editingTx}
         wallets={walletsWithBalance}
+        wishlist={state.wishlist}
         onClose={() => {
           setTxModalOpen(false);
           setEditingTx(null);

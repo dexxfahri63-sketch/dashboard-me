@@ -26,6 +26,8 @@ export interface Transaction {
   amount: number;
   walletId: string;
   toWalletId?: string;
+  wishlistId?: string;
+  wishlistAction?: 'deposit' | 'withdraw';
   createdAt: string;
 }
 
